@@ -1,0 +1,21 @@
+# Course materials and local tools
+/Courses/
+/GView-*/
+
+# Downloaded Lab 2 files and generated output
+/Lab2/archives/
+/Lab2/samples/
+/Lab2/outputs/
+
+# Archives and compiled files
+*.zip
+*.exe
+*.dll
+*.o
+*.obj
+*.pdb
+*.ilk
+
+# Build directories and parser output
+build/
+out.txt
