@@ -87,7 +87,8 @@ std::string machine_name(uint16_t machine)
     switch (machine)
     {
     case 0x014C: return "x86";
-    // TODO: add x64 (0x8664) and ARM64 (0xAA64)
+    case 0x8664: return "x64";
+    case 0xAA64: return "ARM64";
     default:     return "unknown";
     }
 }
@@ -97,16 +98,16 @@ std::string subsystem_name(uint16_t subsystem)
     switch (subsystem)
     {
     case 1:  return "Native";
-    // TODO: add 2 (Windows GUI) and 3 (Windows console)
+    case 2: return "Windows GUI";
+    case 3: return "Windows console";
     default: return "unknown";
     }
 }
 
 std::string data_directory_name(size_t index)
 {
-    // TODO: complete the list of the 16 data directory names (see the lab page)
-    static const char* names[16] = { "Export", "Import", "?", "?", "?", "?", "?", "?",
-                                     "?",      "?",      "?", "?", "?", "?", "?", "?" };
+    static const char* names[16] = { "Export", "Import", "Resource", "Exception", "Security", "BaseReloc", "Debug", "Architecture",
+                                     "GlobalPtr", "TLS", "LoadConfig", "BoundImport", "IAT", "DelayImport", "CLR", "Reserved" };
     return index < 16 ? names[index] : "?";
 }
 
@@ -114,11 +115,33 @@ std::string data_directory_name(size_t index)
 const std::vector<FlagName> FILE_CHARACTERISTICS = {
     { 0x0001, "RELOCS_STRIPPED" },
     { 0x0002, "EXECUTABLE_IMAGE" },
+    { 0x0004, "LINE_NUMS_STRIPPED" },
+    { 0x0008, "LOCAL_SYMS_STRIPPED" },
+    { 0x0010, "AGGRESSIVE_WS_TRIM" },
+    { 0x0020, "LARGE_ADDRESS_AWARE" },
+    { 0x0080, "BYTES_REVERSED_LO" },
+    { 0x0100, "32BIT_MACHINE" },
+    { 0x0200, "DEBUG_STRIPPED" },
+    { 0x0400, "REMOVABLE_RUN_FROM_SWAP" },
+    { 0x0800, "NET_RUN_FROM_SWAP" },
+    { 0x1000, "SYSTEM" },
+    { 0x2000, "DLL" },
+    { 0x4000, "UP_SYSTEM_ONLY" },
+    { 0x8000, "BYTES_REVERSED_HI" },
 };
 
 const std::vector<FlagName> DLL_CHARACTERISTICS = {
     { 0x0020, "HIGH_ENTROPY_VA" },
     { 0x0040, "DYNAMIC_BASE" },
+    { 0x0080, "FORCE_INTEGRITY" },
+    { 0x0100, "NX_COMPAT" },
+    { 0x0200, "NO_ISOLATION" },
+    { 0x0400, "NO_SEH" },
+    { 0x0800, "NO_BIND" },
+    { 0x1000, "APPCONTAINER" },
+    { 0x2000, "WDM_DRIVER" },
+    { 0x4000, "GUARD_CF" },
+    { 0x8000, "TERMINAL_SERVER_AWARE" },
 };
 
 // Returns "R-X", "RW-", ... from the IMAGE_SCN_MEM_READ (0x40000000), IMAGE_SCN_MEM_WRITE (0x80000000)
@@ -128,7 +151,13 @@ std::string section_permissions(uint32_t characteristics)
     std::string perm = "---";
     if (characteristics & 0x40000000)
         perm[0] = 'R';
-    // TODO: W and X
+
+    if (characteristics & 0x80000000)
+        perm[1] = 'W';
+
+    if (characteristics & 0x20000000)
+        perm[2] = 'X';
+
     return perm;
 }
 
@@ -150,25 +179,40 @@ DosHeader parse_dos_header(const Bytes& data)
 // Reads the 4-byte signature at `offset` and throws ParseError if it is not "PE\0\0" (0x00004550).
 void check_pe_signature(const Bytes& data, uint64_t offset)
 {
-    // TODO
-    throw ParseError("TODO: implement check_pe_signature()");
+    uint32_t signature = read_u32(data, offset);
+    if (signature != 0x00004550) // "PE\0\0"
+        throw ParseError("invalid PE signature");
 }
 
 // `offset` is where the COFF file header starts (right after the signature).
 FileHeader parse_file_header(const Bytes& data, uint64_t offset)
 {
+    check_range(data, offset, 20);
+
     FileHeader file;
-    // TODO: read Machine, NumberOfSections, TimeDateStamp, SizeOfOptionalHeader, Characteristics
-    throw ParseError("TODO: implement parse_file_header()");
+    file.machine = read_u16(data, offset + 0x00);
+    file.number_of_sections = read_u16(data, offset + 0x02);
+    file.time_date_stamp = read_u32(data, offset + 0x04);
+    file.size_of_optional_header = read_u16(data, offset + 0x10);
+    file.characteristics = read_u16(data, offset + 0x12);
+
     return file;
 }
 
 // Reads `count` entries of 8 bytes each: { uint32 VirtualAddress (RVA); uint32 Size; }
 std::vector<DataDirectory> parse_data_directories(const Bytes& data, uint64_t offset, uint32_t count)
 {
+    check_range(data, offset, uint64_t(count) * 8);
+
     std::vector<DataDirectory> directories;
-    // TODO
-    throw ParseError("TODO: implement parse_data_directories()");
+    
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t entry_offset = offset + uint64_t(i) * 8;
+        directories.push_back({
+            read_u32(data, entry_offset),       // RVA
+            read_u32(data, entry_offset + 0x04) // Size
+        });
+    }
     return directories;
 }
 
@@ -176,23 +220,68 @@ std::vector<DataDirectory> parse_data_directories(const Bytes& data, uint64_t of
 OptionalHeader parse_optional_header(const Bytes& data, uint64_t offset, uint16_t size_of_optional_header)
 {
     OptionalHeader opt;
-    // TODO:
-    //   1. read Magic; throw ParseError if it is neither 0x10B (PE32) nor 0x20B (PE32+)
-    //   2. read the other fields, using the right offsets for PE32 / PE32+
-    //   3. never trust NumberOfRvaAndSizes: parse at most 16 data directories
-    //   4. throw ParseError if size_of_optional_header is too small to hold the data directories
-    //   5. opt.data_directories = parse_data_directories(...)
-    throw ParseError("TODO: implement parse_optional_header()");
+
+    if (size_of_optional_header < 2)
+        throw ParseError("optional header too small to read Magic");
+
+    check_range(data, offset, size_of_optional_header);
+
+    opt.magic = read_u16(data, offset);
+    if (opt.magic != 0x010B && opt.magic != 0x020B)
+        throw ParseError("unsupported optional header Magic");
+
+    opt.is_pe32_plus = opt.magic == 0x020B;
+
+    uint64_t directory_offset = opt.is_pe32_plus ? 0x70 : 0x60;
+
+    if (size_of_optional_header < directory_offset)
+        throw ParseError("optional header is too small for its fixed fields");
+
+    opt.address_of_entry_point = read_u32(data, offset + 0x10);
+
+    opt.image_base = opt.is_pe32_plus ? read_u64(data, offset + 0x18) : read_u32(data, offset + 0x1C);
+
+    opt.section_alignment = read_u32(data, offset + 0x20);
+    opt.file_alignment = read_u32(data, offset + 0x24);
+    opt.size_of_image = read_u32(data, offset + 0x38);
+    opt.size_of_headers = read_u32(data, offset + 0x3C);
+    opt.subsystem = read_u16(data, offset + 0x44);
+    opt.dll_characteristics = read_u16(data, offset + 0x46);
+
+    uint64_t count_offset = opt.is_pe32_plus ? 0x6C : 0x5C;
+    opt.number_of_rva_and_sizes = read_u32(data, offset + count_offset);
+
+    uint32_t count = opt.number_of_rva_and_sizes > 16 ? 16 : opt.number_of_rva_and_sizes;
+    uint64_t required_size = directory_offset + uint64_t(count) * 8;
+    
+    if (size_of_optional_header < required_size)
+        throw ParseError("optional header is too small for its data directories");
+
+    opt.data_directories = parse_data_directories(data, offset + directory_offset, count);
+
     return opt;
 }
 
 // `offset` is where the section table starts; each section header is 40 bytes.
 std::vector<Section> parse_sections(const Bytes& data, uint64_t offset, uint16_t count)
 {
+    check_range(data, offset, uint64_t(count) * 40);
+
     std::vector<Section> sections;
-    // TODO: for each section read Name (read_fixed_string, 8 bytes), VirtualSize, VirtualAddress,
-    //       SizeOfRawData, PointerToRawData, Characteristics
-    throw ParseError("TODO: implement parse_sections()");
+
+    for ( uint64_t i = 0; i < count; i++){
+        uint64_t entry_offset = offset + uint64_t(i) * 40;
+
+        Section section;
+        section.name = read_fixed_string(data, entry_offset, 8);
+        section.virtual_size = read_u32(data, entry_offset + 0x08);
+        section.virtual_address = read_u32(data, entry_offset + 0x0C);
+        section.size_of_raw_data = read_u32(data, entry_offset + 0x10);
+        section.pointer_to_raw_data = read_u32(data, entry_offset + 0x14);
+        section.characteristics = read_u32(data, entry_offset + 0x24);
+
+        sections.push_back(section);
+    }
     return sections;
 }
 
@@ -205,7 +294,14 @@ std::vector<Section> parse_sections(const Bytes& data, uint64_t offset, uint16_t
 // (some linkers write VirtualSize = 0; in that case use SizeOfRawData)
 const Section* find_section(const PeFile& pe, uint32_t rva)
 {
-    // TODO
+    for (const Section& section : pe.sections) {
+        uint64_t start = section.virtual_address;
+
+        uint64_t size = section.virtual_size != 0 ? section.virtual_size : section.size_of_raw_data;
+
+        if (rva >= start && rva < start + size)
+            return &section;
+    }
     return nullptr;
 }
 
@@ -216,8 +312,20 @@ const Section* find_section(const PeFile& pe, uint32_t rva)
 //   - offset = PointerToRawData + delta
 std::optional<uint64_t> rva_to_offset(const PeFile& pe, uint32_t rva)
 {
-    // TODO
-    return std::nullopt;
+    if (rva < pe.optional.size_of_headers)
+        return rva;
+
+    const Section* section = find_section(pe, rva);
+
+    if (section == nullptr)
+        return std::nullopt;
+
+    uint64_t delta = uint64_t(rva) - section->virtual_address;
+
+    if (delta >= section->size_of_raw_data)
+        return std::nullopt;
+
+    return uint64_t(section->pointer_to_raw_data) + delta;
 }
 
 // =============================================================================================
@@ -334,17 +442,17 @@ void run(const std::string& path)
     print_pe_signature(pe_offset);
 
     // Step 3: the COFF file header follows the 4-byte signature.
-    uint64_t file_header_offset = 0; // TODO
+    uint64_t file_header_offset = pe_offset + 4;
     pe.file = parse_file_header(data, file_header_offset);
     print_file_header(pe.file);
 
     // Step 4: the optional header follows the 20-byte COFF file header.
-    uint64_t optional_header_offset = 0; // TODO
+    uint64_t optional_header_offset = file_header_offset + 20;
     pe.optional = parse_optional_header(data, optional_header_offset, pe.file.size_of_optional_header);
     print_optional_header(pe.optional);
 
     // Step 5: the section table follows the optional header (SizeOfOptionalHeader bytes).
-    uint64_t section_table_offset = 0; // TODO
+    uint64_t section_table_offset = optional_header_offset + pe.file.size_of_optional_header;
     pe.sections = parse_sections(data, section_table_offset, pe.file.number_of_sections);
     print_sections(pe.sections);
 
